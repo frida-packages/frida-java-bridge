@@ -3,6 +3,7 @@ package re.frida;
 import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
 
 import org.junit.runner.JUnitCore;
 
@@ -36,6 +37,15 @@ public class TestRunner {
 
     public static String getCodeCacheDir() {
         return cacheDir;
+    }
+
+    public static String bundleWith(String code) {
+        int size = code.getBytes(StandardCharsets.UTF_8).length;
+        return fridaJavaBundle +
+                "\n\u2704\n" +
+                size + " /test.js" +
+                "\n\u2704\n" +
+                code;
     }
 
     private static native void registerClassLoader(ClassLoader loader);
