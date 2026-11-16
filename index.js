@@ -1,6 +1,7 @@
 import getApi from './lib/api.js';
 import {
   getAndroidVersion,
+  hasActiveReplacementFrames,
   withAllArtThreadsSuspended,
   withRunnableArtThread,
   makeArtClassVisitor,
@@ -93,6 +94,41 @@ class Runtime {
       return;
     }
 
+    if (this.api.flavor === 'art') {
+      this._disposeOnceReplacementsDrain();
+    } else {
+      this._disposeNow();
+    }
+  }
+
+  _disposeOnceReplacementsDrain () {
+    const { vm } = this;
+
+    Script.pin();
+    vm.deferHandleReleases();
+
+    const replacements = vm.perform(() => ClassFactory._revertAll());
+    const replacementMethodIds = new Set(replacements.map(r => r._m.replacementMethodId.toString()));
+
+    const disposeWhenDrained = () => {
+      const replacementsActive = replacementMethodIds.size !== 0 &&
+          (vm.perform(env => hasActiveReplacementFrames(replacementMethodIds, env)) ||
+            replacements.some(r => r._c.size !== 0));
+      if (replacementsActive) {
+        setTimeout(disposeWhenDrained, 10);
+        return;
+      }
+
+      vm.perform(env => {
+        vm.releaseDeferredHandles(env);
+      });
+      this._disposeNow();
+      Script.unpin();
+    };
+    setImmediate(disposeWhenDrained);
+  }
+
+  _disposeNow () {
     const { vm } = this;
     vm.perform(env => {
       ClassFactory._disposeAll(env);
