@@ -8,7 +8,8 @@ import {
   backtrace,
   deoptimizeEverything,
   deoptimizeBootImage,
-  deoptimizeMethod
+  deoptimizeMethod,
+  isMethodDeoptimized
 } from './lib/android.js';
 import ClassFactory from './lib/class-factory.js';
 import ClassModel from './lib/class-model.js';
@@ -540,6 +541,11 @@ class Runtime {
   deoptimizeMethod (method) {
     const { vm } = this;
     return deoptimizeMethod(vm, vm.getEnv(), method);
+  }
+
+  isMethodDeoptimized (method) {
+    const { vm } = this;
+    return isMethodDeoptimized(vm, vm.getEnv(), method);
   }
 
   _checkAvailable () {

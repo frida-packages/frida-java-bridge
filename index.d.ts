@@ -197,6 +197,11 @@ declare module "frida-java-bridge" {
          */
         function deoptimizeMethod(method: Method): void;
 
+        /**
+         * Checks whether the given method has been deoptimized.
+         */
+        function isMethodDeoptimized(method: Method): boolean;
+
         const vm: VM;
 
         /**
