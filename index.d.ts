@@ -192,6 +192,11 @@ declare module "frida-java-bridge" {
          */
         function deoptimizeBootImage(): void;
 
+        /**
+         * Forces the VM to execute the given method with its interpreter.
+         */
+        function deoptimizeMethod(method: Method): void;
+
         const vm: VM;
 
         /**
