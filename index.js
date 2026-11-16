@@ -450,6 +450,24 @@ class Runtime {
 
         return apk;
       };
+
+      const pollForApplication = () => {
+        runtime.vm.perform(() => {
+          const app = ActivityThread.currentApplication();
+          if (initialized) {
+            return;
+          }
+          if (app === null) {
+            setTimeout(pollForApplication, 50);
+            return;
+          }
+
+          initialized = true;
+          initFactoryFromApplication(factory, app);
+          runtime._performPendingVmOps();
+        });
+      };
+      setTimeout(pollForApplication, 50);
     });
   }
 
