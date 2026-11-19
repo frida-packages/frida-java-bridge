@@ -394,8 +394,9 @@ declare module "frida-java-bridge" {
                  *
                  * Replace the `implementation` property to hook it. As the class is only ever
                  * initialized once, this must happen before anything touches it -- accessing a
-                 * static member, or calling a static method, is enough to trigger it. Throws if
-                 * the class has no class initializer.
+                 * static member, or calling a static method, is enough to trigger it. Note that
+                 * `Java.use()` itself deliberately does not. Throws if the class has no class
+                 * initializer.
                  *
                  * Not supported on Dalvik, i.e. Android < 5.0.
                  */
