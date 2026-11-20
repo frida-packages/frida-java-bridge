@@ -208,8 +208,10 @@ public class MethodTest {
                     "}" +
                 "});" +
 
-                "send(returnZero.call(badger));" +
+                "var result = returnZero.call(badger);" +
 
+                "Stalker.unfollow();" +
+                "send(result);" +
                 "Stalker.flush();");
         assertEquals("0", script.getNextMessage());
         assertEquals("onCallSummary", script.getNextMessage());

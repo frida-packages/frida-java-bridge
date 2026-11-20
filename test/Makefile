@@ -2,8 +2,10 @@ include config.mk
 
 build_os_arch := $(shell uname -s | tr -s "[A-Z]" "[a-z]")-$(shell uname -m)
 
-android_platform := android-$(ANDROID_API_LEVEL)
-android_sysroot := $(ANDROID_NDK_ROOT)/platforms/$(android_platform)/arch-$(ANDROID_ARCH)
+android_api_major := $(firstword $(subst ., ,$(ANDROID_API_LEVEL)))
+android_platform := $(if $(wildcard $(ANDROID_SDK_ROOT)/platforms/android-$(ANDROID_API_LEVEL)/android.jar),android-$(ANDROID_API_LEVEL),$(notdir $(lastword $(sort $(wildcard $(ANDROID_SDK_ROOT)/platforms/android-$(ANDROID_API_LEVEL).*)))))
+android_platform := $(if $(android_platform),$(android_platform),android-$(ANDROID_API_LEVEL))
+android_sysroot := $(ANDROID_NDK_ROOT)/platforms/android-$(android_api_major)/arch-$(ANDROID_ARCH)
 
 deploy_prefix := /data/local/tmp
 deploy_data_dir := $(deploy_prefix)/frida-java-bridge-tests
@@ -13,8 +15,15 @@ frida_version := 17.26.3
 
 test_sources := $(wildcard re/frida/*.java)
 test_classes := $(patsubst %.java,%.class,$(test_sources))
+bridge_sources := bundle.js ../index.js $(wildcard ../lib/*.js)
 
 android_jar := $(ANDROID_SDK_ROOT)/platforms/$(android_platform)/android.jar
+
+android_deploy_files := \
+	build/$(ANDROID_ABI)/runner \
+	build/$(ANDROID_ABI)/libartpalette.so \
+	build/tests.dex \
+	build/frida-java-bridge.js
 
 all:
 	@echo "Available targets: deploy run"
@@ -22,19 +31,25 @@ all:
 clean:
 	rm -rf build
 
-deploy: build/$(ANDROID_ABI)/runner build/tests.dex build/frida-java-bridge.js
-	adb shell "rm -rf $(deploy_data_dir) && mkdir -p $(deploy_data_dir)"
-	adb push $^ build/$(ANDROID_ABI)/libartpalette.so $(deploy_data_dir)
+deploy: $(android_deploy_files)
+	adb shell "mkdir -p $(deploy_data_dir) $(deploy_cache_dir)"
+	adb push --sync $(android_deploy_files) $(deploy_data_dir)/
 
 run:
-	adb shell "LD_PRELOAD=$(ANDROID_VM) LD_LIBRARY_PATH='$(APEX_LIBDIRS):$(deploy_data_dir)' $(deploy_data_dir)/runner $(RUNNER_ARGS)"
+	@since=$$(adb shell 'date "+%m-%d %H:%M:%S.000"' | tr -d '\r'); \
+	adb shell "LD_PRELOAD=$(ANDROID_VM) LD_LIBRARY_PATH='$(APEX_LIBDIRS):$(deploy_data_dir)' $(deploy_data_dir)/runner $(RUNNER_ARGS)" || { \
+		status=$$?; \
+		adb logcat -d -T "$$since" -b crash || true; \
+		adb logcat -d -T "$$since" -b main *:W || true; \
+		exit $$status; \
+	}
 
 watch:
 	npm run watch &
 	./node_modules/.bin/chokidar \
 		build/frida-java-bridge.js \
-		-c "adb push build/frida-java-bridge.js $(deploy_data_dir) \
-			&& adb shell 'LD_LIBRARY_PATH='$(APEX_LIBDIRS):$(deploy_data_dir)' $(deploy_data_dir)/runner $(RUNNER_ARGS)'"
+		-c "adb push --sync build/frida-java-bridge.js $(deploy_data_dir)/ \
+			&& adb shell \"LD_PRELOAD=$(ANDROID_VM) LD_LIBRARY_PATH='$(APEX_LIBDIRS):$(deploy_data_dir)' $(deploy_data_dir)/runner $(RUNNER_ARGS)\""
 
 debug: build/gdb.setup
 	adb shell "rm -f $(deploy_data_dir)/debug-socket"
@@ -60,6 +75,9 @@ build/symbols.stamp:
 	adb pull -a $(shell adb shell "ls $(ANDROID_LIBDIR)/*.so") build/symbols/$(ANDROID_LIBDIR)/; \
 	touch $@
 
+build/$(ANDROID_ABI)/libartpalette.so: build/$(ANDROID_ABI)/runner
+	@test -f $@
+
 build/$(ANDROID_ABI)/runner: runner.c artpalette.c build/obj/local/$(ANDROID_ABI)/libfrida-gumjs.a
 	$(ANDROID_NDK_ROOT)/ndk-build \
 		NDK_PROJECT_PATH=$$(pwd) \
@@ -71,15 +89,17 @@ build/$(ANDROID_ABI)/runner: runner.c artpalette.c build/obj/local/$(ANDROID_ABI
 
 build/obj/local/$(ANDROID_ABI)/libfrida-gumjs.a:
 	@mkdir -p $(@D)
-	curl -Ls https://github.com/frida/frida/releases/download/$(frida_version)/frida-gumjs-devkit-$(frida_version)-android-$(ANDROID_ARCH).tar.xz | tar -xJf - -C $(@D)
+	curl -fsSL https://github.com/frida/frida/releases/download/$(frida_version)/frida-gumjs-devkit-$(frida_version)-android-$(ANDROID_ARCH).tar.xz -o $@.tar.xz.tmp
+	tar -xJf $@.tar.xz.tmp -C $(@D)
+	rm -f $@.tar.xz.tmp
 
 build/tests.dex: build/tests.jar
 	d8 \
 		--output build/tests.zip \
 		--classpath $(android_jar) \
-		--min-api $(ANDROID_API_LEVEL) \
+		--min-api $(android_api_major) \
 		$<
-	cd build && unzip tests.zip classes.dex
+	cd build && unzip -o tests.zip classes.dex
 	mv build/classes.dex $@
 
 build/tests.jar: $(test_sources) build/junit.jar build/hamcrest.jar
@@ -101,13 +121,15 @@ build/tests.jar: $(test_sources) build/junit.jar build/hamcrest.jar
 
 build/junit.jar:
 	@mkdir -p $(@D)
-	curl -Ls https://github.com/junit-team/junit4/releases/download/r4.12/junit-4.12.jar > $@
+	curl -fsSL https://github.com/junit-team/junit4/releases/download/r4.12/junit-4.12.jar -o $@.tmp
+	mv $@.tmp $@
 
 build/hamcrest.jar:
 	@mkdir -p $(@D)
-	curl -Ls https://search.maven.org/remotecontent?filepath=org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar > $@
+	curl -fsSL https://repo1.maven.org/maven2/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar -o $@.tmp
+	mv $@.tmp $@
 
-build/frida-java-bridge.js: node_modules
+build/frida-java-bridge.js: node_modules $(bridge_sources)
 	npm run build
 
 node_modules: package.json

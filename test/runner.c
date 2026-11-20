@@ -2,11 +2,17 @@
 #include <fcntl.h>
 #include <frida-gumjs.h>
 #include <jni.h>
+#include <signal.h>
 #include <stdlib.h>
+#include <string.h>
+#if defined (__linux__) && defined (__LP64__)
+# include <sys/mman.h>
+#endif
 #include <sys/system_properties.h>
 
 typedef struct _CreateScriptOperation CreateScriptOperation;
 typedef struct _DestroyScriptOperation DestroyScriptOperation;
+typedef struct _SigchainAction SigchainAction;
 
 struct _CreateScriptOperation
 {
@@ -31,6 +37,13 @@ struct _DestroyScriptOperation
   GCond cond;
 };
 
+struct _SigchainAction
+{
+  bool (* sc_sigaction) (int, siginfo_t *, void *);
+  sigset_t sc_mask;
+  guint64 sc_flags;
+};
+
 static void frida_java_init_vm (JavaVM ** vm, JNIEnv ** env, gboolean enable_optimizations);
 static void frida_java_register_test_runner_api (JNIEnv * env);
 static void frida_java_register_script_api (JNIEnv * env);
@@ -52,7 +65,14 @@ static void re_frida_badger_native_method (JNIEnv * env, jobject self, jstring s
 
 static void destroy_weak_ref (jweak ref);
 
+#if defined (__linux__) && defined (__LP64__)
+static gpointer frida_java_allocate_memory (const GumAddressSpec * spec, gsize size, gsize alignment,
+    GumPageProtection prot, gpointer user_data);
+#endif
+
 static guint get_system_api_level (void);
+
+static void on_special_signal (int signo, siginfo_t * info, void * context);
 
 static const JNINativeMethod re_frida_test_runner_methods[] =
 {
@@ -78,6 +98,12 @@ static jobject re_frida_test_runner_class_loader;
 
 static jmethodID re_frida_script_on_message_method;
 
+#define MAX_SPECIAL_HANDLERS 4
+
+static SigchainAction special_handlers[NSIG][MAX_SPECIAL_HANDLERS];
+static guint special_handler_count[NSIG];
+static struct sigaction previous_action[NSIG];
+
 int
 main (int argc, char * argv[])
 {
@@ -94,6 +120,14 @@ main (int argc, char * argv[])
   gboolean enable_optimizations;
 
   gum_init_embedded ();
+
+#if defined (__linux__) && defined (__LP64__)
+  {
+    GumMemoryHooks hooks = { 0, };
+    hooks.allocate = frida_java_allocate_memory;
+    gum_memory_set_hooks (&hooks);
+  }
+#endif
 
   js_scheduler = gum_script_backend_get_scheduler ();
   js_context = gum_script_scheduler_get_js_context (js_scheduler);
@@ -558,6 +592,74 @@ destroy_weak_ref (jweak ref)
   (*env)->DeleteWeakGlobalRef (env, ref);
 }
 
+#if defined (__linux__) && defined (__LP64__)
+
+static gpointer
+frida_java_allocate_memory (const GumAddressSpec * spec,
+                            gsize size,
+                            gsize alignment,
+                            GumPageProtection prot,
+                            gpointer user_data)
+{
+  GumPageProtection non_exec_prot = prot & ~GUM_PAGE_EXECUTE;
+  gpointer mem = NULL;
+
+  if (spec != NULL)
+  {
+    mem = gum_memory_allocate_near (spec, size, alignment, non_exec_prot);
+  }
+  else
+  {
+    const gsize window_size = 64 * 1024 * 1024;
+    gsize page_size = gum_query_page_size ();
+    gsize effective_alignment = MAX (alignment, page_size);
+    gsize aligned_size = GUM_ALIGN_SIZE (size, page_size);
+
+    if (aligned_size > 0 &&
+        aligned_size <= (window_size / 4) &&
+        effective_alignment <= (window_size / 4) &&
+        (effective_alignment & (effective_alignment - 1)) == 0)
+    {
+      gpointer probe = mmap (NULL, window_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      if (probe != MAP_FAILED)
+      {
+        guint8 * probe_start = probe;
+        guint8 * probe_end = probe_start + window_size;
+        guint8 * target = GUM_ALIGN_POINTER (guint8 *, probe_start + (window_size / 2), effective_alignment);
+        gpointer mapped = mmap (target, aligned_size, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (mapped == target)
+        {
+          munmap (probe_start, target - probe_start);
+          if (target + aligned_size < probe_end)
+            munmap (target + aligned_size, probe_end - (target + aligned_size));
+          mem = mapped;
+        }
+        else
+        {
+          munmap (probe, window_size);
+        }
+      }
+    }
+
+    if (mem == NULL)
+      mem = gum_memory_allocate (NULL, size, alignment, non_exec_prot);
+  }
+
+  if (mem != NULL && prot != non_exec_prot)
+  {
+    if (!gum_try_mprotect (mem, size, prot))
+    {
+      gum_memory_free (mem, size);
+      return NULL;
+    }
+  }
+
+  return mem;
+}
+
+#endif
+
 static guint
 get_system_api_level (void)
 {
@@ -606,13 +708,84 @@ SetSpecialSignalHandlerFn (int signal, gpointer fn)
 }
 
 void
-AddSpecialSignalHandlerFn (int signal, gpointer sa)
+AddSpecialSignalHandlerFn (int signal, SigchainAction * sa)
 {
-  /* g_print ("AddSpecialSignalHandlerFn(signal=%d)\n", signal); */
+  guint count;
+  struct sigaction action;
+
+  if (signal <= 0 || signal >= NSIG)
+    return;
+
+  count = special_handler_count[signal];
+  if (count >= MAX_SPECIAL_HANDLERS)
+    return;
+
+  special_handlers[signal][count] = *sa;
+  special_handler_count[signal] = count + 1;
+
+  if (count == 0)
+  {
+    memset (&action, 0, sizeof (action));
+    action.sa_sigaction = on_special_signal;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    action.sa_mask = sa->sc_mask;
+
+    sigaction (signal, &action, &previous_action[signal]);
+  }
 }
 
 void
 RemoveSpecialSignalHandlerFn (int signal, bool (* fn) (int, siginfo_t *, void *))
 {
-  /* g_print ("RemoveSpecialSignalHandlerFn(signal=%d)\n", signal); */
+  guint count, i;
+
+  if (signal <= 0 || signal >= NSIG)
+    return;
+
+  count = special_handler_count[signal];
+  for (i = 0; i != count; i++)
+  {
+    if (special_handlers[signal][i].sc_sigaction == fn)
+    {
+      guint j;
+
+      for (j = i + 1; j != count; j++)
+        special_handlers[signal][j - 1] = special_handlers[signal][j];
+
+      special_handler_count[signal] = count - 1;
+      if (count == 1)
+        sigaction (signal, &previous_action[signal], NULL);
+      return;
+    }
+  }
+}
+
+static void
+on_special_signal (int signo, siginfo_t * info, void * context)
+{
+  guint count, i;
+  struct sigaction prev;
+
+  count = special_handler_count[signo];
+  for (i = 0; i != count; i++)
+  {
+    bool (* handler) (int, siginfo_t *, void *) = special_handlers[signo][i].sc_sigaction;
+    if (handler != NULL && handler (signo, info, context))
+      return;
+  }
+
+  prev = previous_action[signo];
+  if ((prev.sa_flags & SA_SIGINFO) != 0 && prev.sa_sigaction != NULL)
+  {
+    prev.sa_sigaction (signo, info, context);
+    return;
+  }
+
+  if ((prev.sa_flags & SA_SIGINFO) == 0 && prev.sa_handler != SIG_DFL && prev.sa_handler != SIG_IGN)
+  {
+    prev.sa_handler (signo);
+    return;
+  }
+
+  sigaction (signo, &prev, NULL);
 }

@@ -4,19 +4,27 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        api: [26, 27, 28, 29, 30, 31]
+        api: [26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
         arch: [x86_64]
-        exclude:
-          - api: 30
-            arch: x86
-          - api: 31
-            arch: x86
     env:
-      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 200 # Default is 20
+      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 200
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
+      - name: Cache test dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            test/build/junit.jar
+            test/build/hamcrest.jar
+            test/build/obj/local/${{ matrix.arch }}/frida-gumjs.h
+            test/build/obj/local/${{ matrix.arch }}/libfrida-gumjs.a
+          key: android-deps-${{ matrix.arch }}-${{ hashFiles('test/Makefile', 'package-lock.json', 'test/package-lock.json') }}
+          restore-keys: |
+            android-deps-${{ matrix.arch }}-
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -50,7 +58,8 @@ jobs:
           disable-animations: true
           script: >-
             sdkmanager "platforms;android-${{ matrix.api }}"
-            && PATH="$ANDROID_SDK_ROOT/build-tools/34.0.0:$PATH"
+            && BUILD_TOOLS_DIR="$(ls -d "$ANDROID_SDK_ROOT/build-tools/"* | sort -V | tail -n 1)"
+            && PATH="$BUILD_TOOLS_DIR:$PATH"
             ANDROID_ARCH=${{ matrix.arch }}
             ANDROID_ABI=${{ matrix.arch }}
             ANDROID_API_LEVEL=${{ matrix.api }}

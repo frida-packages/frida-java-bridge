@@ -4,6 +4,7 @@ import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 import org.junit.runner.JUnitCore;
 
@@ -24,13 +25,16 @@ public class TestRunner {
 
         registerClassLoader(TestRunner.class.getClassLoader());
 
-        JUnitCore.main(
-            "re.frida.ClassRegistryTest",
-            "re.frida.MethodTest",
-            "re.frida.ClassCreationTest",
-            "re.frida.ClassInitializerTest",
-            "re.frida.PerformTest"
-        );
+        String[] classes = (args.length > 1)
+                ? Arrays.copyOfRange(args, 1, args.length)
+                : new String[] {
+                    "re.frida.ClassRegistryTest",
+                    "re.frida.MethodTest",
+                    "re.frida.ClassCreationTest",
+                    "re.frida.ClassInitializerTest",
+                    "re.frida.PerformTest"
+                };
+        JUnitCore.main(classes);
     }
 
     public static String getCacheDir() {
