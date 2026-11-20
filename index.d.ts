@@ -389,6 +389,19 @@ declare module "frida-java-bridge" {
                 $init: MethodDispatcher<T>;
 
                 /**
+                 * The class initializer, i.e. `<clinit>`, which the runtime invokes once to
+                 * initialize the class' static state.
+                 *
+                 * Replace the `implementation` property to hook it. As the class is only ever
+                 * initialized once, this must happen before anything touches it -- accessing a
+                 * static member, or calling a static method, is enough to trigger it. Throws if
+                 * the class has no class initializer.
+                 *
+                 * Not supported on Dalvik, i.e. Android < 5.0.
+                 */
+                $clinit: Method<T, [], void>;
+
+                /**
                  * Eagerly deletes the underlying JNI global reference without having to
                  * wait for the object to become unreachable and the JavaScript
                  * runtime's garbage collector to kick in (or script to be unloaded).
@@ -534,9 +547,10 @@ declare module "frida-java-bridge" {
 
         // eslint-disable-next-line @definitelytyped/no-const-enum
         const enum MethodType {
-            Constructor = 1,
-            Static = 2,
-            Instance = 3,
+            ClassInitializer = 1,
+            Constructor = 2,
+            Static = 3,
+            Instance = 4,
         }
 
         // eslint-disable-next-line @definitelytyped/no-const-enum
