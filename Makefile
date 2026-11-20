@@ -1,28 +1,43 @@
 all:
-	@echo "Nothing to build. To run the test-suite: make check"
+	@echo "Nothing to build. To run the test-suite: make check-android or make check-jvm"
 
-check: node_modules
-	$(MAKE) -C test deploy
+check-android: node_modules
+	$(MAKE) -C test deploy-android
 	@echo ""
-	@echo "[*] Running the test suite with optimizations disabled (interpreter mode)."
+	@echo "[*] Running the Android test suite with optimizations disabled (interpreter mode)."
 	@echo ""
-	@$(MAKE) -C test run
+	@$(MAKE) -C test run-android
 	@echo ""
-	@echo "[*] Running the test suite with optimizations enabled."
+	@echo "[*] Running the Android test suite with optimizations enabled."
 	@echo ""
-	@$(MAKE) -C test RUNNER_ARGS="--enable-optimizations" run
+	@$(MAKE) -C test RUNNER_ARGS="--enable-optimizations" run-android
 
-check-run: node_modules
-	$(MAKE) -C test deploy
-	$(MAKE) -C test run
+check-android-gdb: node_modules
+	$(MAKE) -C test deploy-android
+	$(MAKE) -C test debug-android
 
-check-gdb: node_modules
-	$(MAKE) -C test deploy
-	$(MAKE) -C test debug
+develop-android: node_modules
+	$(MAKE) -C test deploy-android
+	$(MAKE) -C test watch-android
 
-develop: node_modules
-	$(MAKE) -C test deploy
-	$(MAKE) -C test watch
+check-jvm: node_modules
+	$(MAKE) -C test build-jvm
+	@echo ""
+	@echo "[*] Running the JVM test suite with optimizations disabled (interpreter mode)."
+	@echo ""
+	@$(MAKE) -C test run-jvm
+	@echo ""
+	@echo "[*] Running the JVM test suite with optimizations enabled."
+	@echo ""
+	@$(MAKE) -C test RUNNER_ARGS="--enable-optimizations" run-jvm
+
+check-jvm-gdb: node_modules
+	$(MAKE) -C test build-jvm
+	$(MAKE) -C test debug-jvm
+
+develop-jvm: node_modules
+	$(MAKE) -C test build-jvm
+	$(MAKE) -C test watch-jvm
 
 node_modules: package.json
 	npm install
@@ -31,4 +46,4 @@ clean:
 	rm -rf node_modules
 	$(MAKE) -C test clean
 
-.PHONY: all check check-run check-gdb develop clean
+.PHONY: all check-android check-android-gdb develop-android check-jvm check-jvm-gdb develop-jvm clean

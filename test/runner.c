@@ -2,22 +2,26 @@
 #include <fcntl.h>
 #include <frida-gumjs.h>
 #include <jni.h>
-#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #if defined (__linux__) && defined (__LP64__)
 # include <sys/mman.h>
 #endif
-#include <sys/system_properties.h>
+#ifdef __ANDROID__
+# include <signal.h>
+# include <sys/system_properties.h>
+#endif
 
 typedef struct _CreateScriptOperation CreateScriptOperation;
 typedef struct _DestroyScriptOperation DestroyScriptOperation;
+#ifdef __ANDROID__
 typedef struct _SigchainAction SigchainAction;
+#endif
 
 struct _CreateScriptOperation
 {
   jweak wrapper;
-  const gchar * source_code;
+  gchar * source_code;
 
   gboolean done;
   GumScript * script;
@@ -37,12 +41,14 @@ struct _DestroyScriptOperation
   GCond cond;
 };
 
+#ifdef __ANDROID__
 struct _SigchainAction
 {
   bool (* sc_sigaction) (int, siginfo_t *, void *);
   sigset_t sc_mask;
   guint64 sc_flags;
 };
+#endif
 
 static void frida_java_init_vm (JavaVM ** vm, JNIEnv ** env, gboolean enable_optimizations);
 static void frida_java_register_test_runner_api (JNIEnv * env);
@@ -56,6 +62,7 @@ static jlong re_frida_script_create (JNIEnv * env, jobject self, jstring source_
 static gboolean create_script_on_js_thread (gpointer user_data);
 static void on_create_ready (GObject * source_object, GAsyncResult * result, gpointer user_data);
 static void on_load_ready (GObject * source_object, GAsyncResult * result, gpointer user_data);
+static gboolean finish_create_script_on_js_thread (gpointer user_data);
 static void re_frida_script_destroy (JNIEnv * env, jobject self, jlong handle);
 static gboolean destroy_script_on_js_thread (gpointer user_data);
 static void on_unload_ready (GObject * source_object, GAsyncResult * result, gpointer user_data);
@@ -63,16 +70,18 @@ static void re_frida_script_on_message (const gchar * message, GBytes * data, gp
 
 static void re_frida_badger_native_method (JNIEnv * env, jobject self, jstring str);
 
-static void destroy_weak_ref (jweak ref);
+static void destroy_weak_ref (gpointer data);
 
 #if defined (__linux__) && defined (__LP64__)
 static gpointer frida_java_allocate_memory (const GumAddressSpec * spec, gsize size, gsize alignment,
     GumPageProtection prot, gpointer user_data);
 #endif
 
+#ifdef __ANDROID__
 static guint get_system_api_level (void);
 
 static void on_special_signal (int signo, siginfo_t * info, void * context);
+#endif
 
 static const JNINativeMethod re_frida_test_runner_methods[] =
 {
@@ -98,11 +107,13 @@ static jobject re_frida_test_runner_class_loader;
 
 static jmethodID re_frida_script_on_message_method;
 
-#define MAX_SPECIAL_HANDLERS 4
+#ifdef __ANDROID__
+# define MAX_SPECIAL_HANDLERS 4
 
 static SigchainAction special_handlers[NSIG][MAX_SPECIAL_HANDLERS];
 static guint special_handler_count[NSIG];
 static struct sigaction previous_action[NSIG];
+#endif
 
 int
 main (int argc, char * argv[])
@@ -198,6 +209,8 @@ main (int argc, char * argv[])
   return result;
 }
 
+#ifdef __ANDROID__
+
 static void
 frida_java_init_vm (JavaVM ** vm, JNIEnv ** env, gboolean enable_optimizations)
 {
@@ -235,7 +248,7 @@ frida_java_init_vm (JavaVM ** vm, JNIEnv ** env, gboolean enable_optimizations)
   options[1].optionString = "-verbose:gc";
   options[2].optionString = "-Xcheck:jni";
   options[3].optionString = "-Xdebug";
-  options[4].optionString = "-Djava.class.path=" FRIDA_JAVA_TESTS_DATA_DIR "/tests.dex";
+  options[4].optionString = "-Djava.class.path=" FRIDA_JAVA_TESTS_DATA_DIR "/tests-android.dex";
 
   if (enable_optimizations)
   {
@@ -274,6 +287,53 @@ frida_java_init_vm (JavaVM ** vm, JNIEnv ** env, gboolean enable_optimizations)
     g_assert_cmpint (result, ==, JNI_OK);
   }
 }
+
+#else
+
+static void
+frida_java_init_vm (JavaVM ** vm, JNIEnv ** env, gboolean enable_optimizations)
+{
+  const gchar * jvm_path;
+  void * vm_module;
+  jint (* create_java_vm) (JavaVM ** vm, void ** env, void * vm_args);
+  int n_options;
+  JavaVMOption * options;
+  JavaVMInitArgs args;
+  jint result;
+
+  jvm_path = getenv ("FRIDA_JAVA_TESTS_JVM_PATH");
+  if (jvm_path == NULL)
+    jvm_path = "libjvm.so";
+
+  vm_module = dlopen (jvm_path, RTLD_LAZY | RTLD_GLOBAL);
+  if (vm_module == NULL)
+  {
+    g_printerr ("Unable to load VM: %s\n", dlerror ());
+    exit (1);
+  }
+
+  create_java_vm = dlsym (vm_module, "JNI_CreateJavaVM");
+  g_assert (create_java_vm != NULL);
+
+  n_options = enable_optimizations ? 1 : 2;
+  options = g_new0 (JavaVMOption, n_options);
+
+  options[0].optionString = "-Djava.class.path=" FRIDA_JAVA_TESTS_DATA_DIR "/tests-jvm.jar";
+  if (!enable_optimizations)
+    options[1].optionString = "-Xint";
+
+  args.version = JNI_VERSION_1_8;
+  args.nOptions = n_options;
+  args.options = options;
+  args.ignoreUnrecognized = JNI_TRUE;
+
+  result = create_java_vm (vm, (void **) env, &args);
+  g_assert_cmpint (result, ==, JNI_OK);
+
+  g_free (options);
+}
+
+#endif
 
 static void
 frida_java_register_test_runner_api (JNIEnv * env)
@@ -334,7 +394,11 @@ frida_java_get_env (void)
   {
     g_assert_cmpint (result, ==, JNI_EDETACHED);
 
+#ifdef __ANDROID__
     result = (*java_vm)->AttachCurrentThread (java_vm, &env, NULL);
+#else
+    result = (*java_vm)->AttachCurrentThread (java_vm, (void **) &env, NULL);
+#endif
     g_assert_cmpint (result, ==, JNI_OK);
   }
 
@@ -351,10 +415,15 @@ static jlong
 re_frida_script_create (JNIEnv * env, jobject self, jstring source_code)
 {
   CreateScriptOperation op;
+  const jchar * chars;
+  jsize length;
   GSource * idle_source;
 
   op.wrapper = (*env)->NewWeakGlobalRef (env, self);
-  op.source_code = (*env)->GetStringUTFChars (env, source_code, NULL);
+  chars = (*env)->GetStringChars (env, source_code, NULL);
+  length = (*env)->GetStringLength (env, source_code);
+  op.source_code = g_utf16_to_utf8 (chars, length, NULL, NULL, NULL);
+  (*env)->ReleaseStringChars (env, source_code, chars);
 
   op.done = FALSE;
   op.script = NULL;
@@ -376,7 +445,7 @@ re_frida_script_create (JNIEnv * env, jobject self, jstring source_code)
   g_cond_clear (&op.cond);
   g_mutex_clear (&op.lock);
 
-  (*env)->ReleaseStringUTFChars (env, source_code, op.source_code);
+  g_free (op.source_code);
 
   if (op.error != NULL)
   {
@@ -431,10 +500,25 @@ static void
 on_load_ready (GObject * source_object, GAsyncResult * result, gpointer user_data)
 {
   CreateScriptOperation * op = user_data;
+  GSource * idle_source;
 
   gum_script_load_finish (op->script, result);
 
+  idle_source = g_idle_source_new ();
+  g_source_set_priority (idle_source, G_PRIORITY_LOW);
+  g_source_set_callback (idle_source, finish_create_script_on_js_thread, op, NULL);
+  g_source_attach (idle_source, js_context);
+  g_source_unref (idle_source);
+}
+
+static gboolean
+finish_create_script_on_js_thread (gpointer user_data)
+{
+  CreateScriptOperation * op = user_data;
+
   create_script_operation_notify_complete (op);
+
+  return FALSE;
 }
 
 static void
@@ -583,8 +667,9 @@ re_frida_badger_native_method (JNIEnv * env, jobject self, jstring str)
 }
 
 static void
-destroy_weak_ref (jweak ref)
+destroy_weak_ref (gpointer data)
 {
+  jweak ref = data;
   JNIEnv * env;
 
   env = frida_java_get_env ();
@@ -659,6 +744,8 @@ frida_java_allocate_memory (const GumAddressSpec * spec,
 }
 
 #endif
+
+#ifdef __ANDROID__
 
 static guint
 get_system_api_level (void)
@@ -789,3 +876,5 @@ on_special_signal (int signo, siginfo_t * info, void * context)
 
   sigaction (signo, &prev, NULL);
 }
+
+#endif

@@ -540,6 +540,10 @@ public class MethodTest {
     // Issue #271
     @Test
     public void toStringOnOverloadedToString() {
+        if (!TestRunner.isAndroid()) {
+            return;
+        }
+
         loadScript("const utf16 = Java.use('android.icu.text.UTF16');" +
                 "send(utf16.toString());");
         assertEquals("<class: android.icu.text.UTF16>", script.getNextMessage());

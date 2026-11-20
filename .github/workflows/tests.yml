@@ -1,7 +1,7 @@
 name: tests
 on: [push, pull_request]
 jobs:
-  tests:
+  android:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -64,4 +64,36 @@ jobs:
             ANDROID_ABI=${{ matrix.arch }}
             ANDROID_API_LEVEL=${{ matrix.api }}
             ANDROID_LIBDIR=/system/${{ contains(matrix.arch, '64') && 'lib64' || 'lib' }}
-            make check
+            make check-android
+
+  jvm:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ['8', '11', '17']
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Cache test dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            test/build/junit.jar
+            test/build/hamcrest.jar
+            test/build/jvm/frida-gumjs
+          key: jvm-deps-${{ hashFiles('test/Makefile') }}
+          restore-keys: |
+            jvm-deps-
+      - name: Run JVM tests
+        run: make check-jvm
