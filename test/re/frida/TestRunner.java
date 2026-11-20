@@ -27,14 +27,38 @@ public class TestRunner {
 
         String[] classes = (args.length > 1)
                 ? Arrays.copyOfRange(args, 1, args.length)
-                : new String[] {
-                    "re.frida.ClassRegistryTest",
-                    "re.frida.MethodTest",
-                    "re.frida.ClassCreationTest",
-                    "re.frida.ClassInitializerTest",
-                    "re.frida.PerformTest"
-                };
+                : isAndroid()
+                    ? new String[] {
+                        "re.frida.ClassRegistryTest",
+                        "re.frida.MethodTest",
+                        "re.frida.ClassCreationTest",
+                        "re.frida.ClassInitializerTest",
+                        "re.frida.PerformTest"
+                    }
+                    : new String[] {
+                        "re.frida.ClassRegistryTest",
+                        "re.frida.MethodTest",
+                        "re.frida.ClassInitializerTest"
+                    };
         JUnitCore.main(classes);
+    }
+
+    public static boolean isAndroid() {
+        try {
+            Class.forName("android.os.Build");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+
+    public static int getAndroidApiLevel() {
+        try {
+            Class<?> version = Class.forName("android.os.Build$VERSION");
+            return version.getField("SDK_INT").getInt(null);
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     public static String getCacheDir() {

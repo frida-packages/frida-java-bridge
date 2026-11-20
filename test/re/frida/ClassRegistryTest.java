@@ -26,7 +26,7 @@ public class ClassRegistryTest {
 
     @Test
     public void classLoadersCanBeEnumerated() {
-        if (android.os.Build.VERSION.SDK_INT < 24) {
+        if (TestRunner.isAndroid() && TestRunner.getAndroidApiLevel() < 24) {
             return;
         }
 
