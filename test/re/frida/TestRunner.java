@@ -28,6 +28,7 @@ public class TestRunner {
             "re.frida.ClassRegistryTest",
             "re.frida.MethodTest",
             "re.frida.ClassCreationTest",
+            "re.frida.ClassInitializerTest",
             "re.frida.PerformTest"
         );
     }
