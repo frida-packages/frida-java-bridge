@@ -5,6 +5,9 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined (__linux__) && defined (__LP64__)
+# include <sys/mman.h>
+#endif
 #include <sys/system_properties.h>
 
 typedef struct _CreateScriptOperation CreateScriptOperation;
@@ -62,6 +65,11 @@ static void re_frida_badger_native_method (JNIEnv * env, jobject self, jstring s
 
 static void destroy_weak_ref (jweak ref);
 
+#if defined (__linux__) && defined (__LP64__)
+static gpointer frida_java_allocate_memory (const GumAddressSpec * spec, gsize size, gsize alignment,
+    GumPageProtection prot, gpointer user_data);
+#endif
+
 static guint get_system_api_level (void);
 
 static void on_special_signal (int signo, siginfo_t * info, void * context);
@@ -112,6 +120,14 @@ main (int argc, char * argv[])
   gboolean enable_optimizations;
 
   gum_init_embedded ();
+
+#if defined (__linux__) && defined (__LP64__)
+  {
+    GumMemoryHooks hooks = { 0, };
+    hooks.allocate = frida_java_allocate_memory;
+    gum_memory_set_hooks (&hooks);
+  }
+#endif
 
   js_scheduler = gum_script_backend_get_scheduler ();
   js_context = gum_script_scheduler_get_js_context (js_scheduler);
@@ -575,6 +591,74 @@ destroy_weak_ref (jweak ref)
 
   (*env)->DeleteWeakGlobalRef (env, ref);
 }
+
+#if defined (__linux__) && defined (__LP64__)
+
+static gpointer
+frida_java_allocate_memory (const GumAddressSpec * spec,
+                            gsize size,
+                            gsize alignment,
+                            GumPageProtection prot,
+                            gpointer user_data)
+{
+  GumPageProtection non_exec_prot = prot & ~GUM_PAGE_EXECUTE;
+  gpointer mem = NULL;
+
+  if (spec != NULL)
+  {
+    mem = gum_memory_allocate_near (spec, size, alignment, non_exec_prot);
+  }
+  else
+  {
+    const gsize window_size = 64 * 1024 * 1024;
+    gsize page_size = gum_query_page_size ();
+    gsize effective_alignment = MAX (alignment, page_size);
+    gsize aligned_size = GUM_ALIGN_SIZE (size, page_size);
+
+    if (aligned_size > 0 &&
+        aligned_size <= (window_size / 4) &&
+        effective_alignment <= (window_size / 4) &&
+        (effective_alignment & (effective_alignment - 1)) == 0)
+    {
+      gpointer probe = mmap (NULL, window_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      if (probe != MAP_FAILED)
+      {
+        guint8 * probe_start = probe;
+        guint8 * probe_end = probe_start + window_size;
+        guint8 * target = GUM_ALIGN_POINTER (guint8 *, probe_start + (window_size / 2), effective_alignment);
+        gpointer mapped = mmap (target, aligned_size, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+        if (mapped == target)
+        {
+          munmap (probe_start, target - probe_start);
+          if (target + aligned_size < probe_end)
+            munmap (target + aligned_size, probe_end - (target + aligned_size));
+          mem = mapped;
+        }
+        else
+        {
+          munmap (probe, window_size);
+        }
+      }
+    }
+
+    if (mem == NULL)
+      mem = gum_memory_allocate (NULL, size, alignment, non_exec_prot);
+  }
+
+  if (mem != NULL && prot != non_exec_prot)
+  {
+    if (!gum_try_mprotect (mem, size, prot))
+    {
+      gum_memory_free (mem, size);
+      return NULL;
+    }
+  }
+
+  return mem;
+}
+
+#endif
 
 static guint
 get_system_api_level (void)
