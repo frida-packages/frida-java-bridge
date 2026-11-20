@@ -1,12 +1,16 @@
 name: linting
 on: [push, pull_request]
 jobs:
-  eslint:
+  lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 18
+          node-version: 22
+          cache: npm
       - run: npm install
       - run: npm run lint
+      - run: node --check index.js lib/*.js
+      - run: npx --no-install tsc --noEmit --lib es2022 index.d.ts
