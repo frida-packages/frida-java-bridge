@@ -465,21 +465,82 @@ on_unload_ready (GObject * source_object, GAsyncResult * result, gpointer user_d
 static void
 re_frida_script_on_message (const gchar * message, GBytes * data, gpointer user_data)
 {
-  JNIEnv * env;
-  jweak weak_wrapper = user_data;
-  jobject wrapper;
+  JsonNode * root;
+  JsonObject * object;
+  const gchar * type;
 
-  env = frida_java_get_env ();
-
-  (*env)->PushLocalFrame (env, 3);
-
-  wrapper = (*env)->NewLocalRef (env, weak_wrapper);
-  if (wrapper != NULL)
+  root = json_from_string (message, NULL);
+  if (root == NULL || !JSON_NODE_HOLDS_OBJECT (root))
   {
-    (*env)->CallVoidMethod (env, wrapper, re_frida_script_on_message_method, (*env)->NewStringUTF (env, message));
+    g_printerr ("%s\n", message);
+    if (root != NULL)
+      json_node_unref (root);
+    return;
   }
 
-  (*env)->PopLocalFrame (env, NULL);
+  object = json_node_get_object (root);
+  type = json_object_get_string_member_with_default (object, "type", "");
+
+  if (strcmp (type, "send") == 0)
+  {
+    JsonNode * payload_node;
+    const gchar * payload;
+    gchar * payload_owned = NULL;
+    JNIEnv * env;
+    jweak weak_wrapper = user_data;
+    jobject wrapper;
+
+    payload_node = json_object_get_member (object, "payload");
+    if (payload_node == NULL)
+    {
+      payload = "null";
+    }
+    else if (JSON_NODE_HOLDS_VALUE (payload_node) && json_node_get_value_type (payload_node) == G_TYPE_STRING)
+    {
+      payload = json_node_get_string (payload_node);
+    }
+    else
+    {
+      payload_owned = json_to_string (payload_node, FALSE);
+      payload = payload_owned;
+    }
+
+    env = frida_java_get_env ();
+
+    (*env)->PushLocalFrame (env, 3);
+
+    wrapper = (*env)->NewLocalRef (env, weak_wrapper);
+    if (wrapper != NULL)
+    {
+      gunichar2 * utf16;
+      glong utf16_len;
+      jstring payload_value;
+
+      utf16 = g_utf8_to_utf16 (payload, -1, NULL, &utf16_len, NULL);
+      payload_value = (*env)->NewString (env, utf16, utf16_len);
+      g_free (utf16);
+
+      (*env)->CallVoidMethod (env, wrapper, re_frida_script_on_message_method, payload_value);
+    }
+
+    (*env)->PopLocalFrame (env, NULL);
+
+    g_free (payload_owned);
+  }
+  else if (strcmp (type, "log") == 0)
+  {
+    g_print ("%s\n", json_object_get_string_member_with_default (object, "payload", ""));
+  }
+  else if (strcmp (type, "error") == 0)
+  {
+    g_printerr ("%s\n", json_object_get_string_member_with_default (object, "stack", message));
+  }
+  else
+  {
+    g_printerr ("%s\n", message);
+  }
+
+  json_node_unref (root);
 }
 
 static void
