@@ -2,11 +2,14 @@
 #include <fcntl.h>
 #include <frida-gumjs.h>
 #include <jni.h>
+#include <signal.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/system_properties.h>
 
 typedef struct _CreateScriptOperation CreateScriptOperation;
 typedef struct _DestroyScriptOperation DestroyScriptOperation;
+typedef struct _SigchainAction SigchainAction;
 
 struct _CreateScriptOperation
 {
@@ -29,6 +32,13 @@ struct _DestroyScriptOperation
 
   GMutex lock;
   GCond cond;
+};
+
+struct _SigchainAction
+{
+  bool (* sc_sigaction) (int, siginfo_t *, void *);
+  sigset_t sc_mask;
+  guint64 sc_flags;
 };
 
 static void frida_java_init_vm (JavaVM ** vm, JNIEnv ** env, gboolean enable_optimizations);
@@ -54,6 +64,8 @@ static void destroy_weak_ref (jweak ref);
 
 static guint get_system_api_level (void);
 
+static void on_special_signal (int signo, siginfo_t * info, void * context);
+
 static const JNINativeMethod re_frida_test_runner_methods[] =
 {
   { "registerClassLoader", "(Ljava/lang/ClassLoader;)V", re_frida_test_runner_register_class_loader },
@@ -77,6 +89,12 @@ static GMainContext * js_context;
 static jobject re_frida_test_runner_class_loader;
 
 static jmethodID re_frida_script_on_message_method;
+
+#define MAX_SPECIAL_HANDLERS 4
+
+static SigchainAction special_handlers[NSIG][MAX_SPECIAL_HANDLERS];
+static guint special_handler_count[NSIG];
+static struct sigaction previous_action[NSIG];
 
 int
 main (int argc, char * argv[])
@@ -606,13 +624,84 @@ SetSpecialSignalHandlerFn (int signal, gpointer fn)
 }
 
 void
-AddSpecialSignalHandlerFn (int signal, gpointer sa)
+AddSpecialSignalHandlerFn (int signal, SigchainAction * sa)
 {
-  /* g_print ("AddSpecialSignalHandlerFn(signal=%d)\n", signal); */
+  guint count;
+  struct sigaction action;
+
+  if (signal <= 0 || signal >= NSIG)
+    return;
+
+  count = special_handler_count[signal];
+  if (count >= MAX_SPECIAL_HANDLERS)
+    return;
+
+  special_handlers[signal][count] = *sa;
+  special_handler_count[signal] = count + 1;
+
+  if (count == 0)
+  {
+    memset (&action, 0, sizeof (action));
+    action.sa_sigaction = on_special_signal;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    action.sa_mask = sa->sc_mask;
+
+    sigaction (signal, &action, &previous_action[signal]);
+  }
 }
 
 void
 RemoveSpecialSignalHandlerFn (int signal, bool (* fn) (int, siginfo_t *, void *))
 {
-  /* g_print ("RemoveSpecialSignalHandlerFn(signal=%d)\n", signal); */
+  guint count, i;
+
+  if (signal <= 0 || signal >= NSIG)
+    return;
+
+  count = special_handler_count[signal];
+  for (i = 0; i != count; i++)
+  {
+    if (special_handlers[signal][i].sc_sigaction == fn)
+    {
+      guint j;
+
+      for (j = i + 1; j != count; j++)
+        special_handlers[signal][j - 1] = special_handlers[signal][j];
+
+      special_handler_count[signal] = count - 1;
+      if (count == 1)
+        sigaction (signal, &previous_action[signal], NULL);
+      return;
+    }
+  }
+}
+
+static void
+on_special_signal (int signo, siginfo_t * info, void * context)
+{
+  guint count, i;
+  struct sigaction prev;
+
+  count = special_handler_count[signo];
+  for (i = 0; i != count; i++)
+  {
+    bool (* handler) (int, siginfo_t *, void *) = special_handlers[signo][i].sc_sigaction;
+    if (handler != NULL && handler (signo, info, context))
+      return;
+  }
+
+  prev = previous_action[signo];
+  if ((prev.sa_flags & SA_SIGINFO) != 0 && prev.sa_sigaction != NULL)
+  {
+    prev.sa_sigaction (signo, info, context);
+    return;
+  }
+
+  if ((prev.sa_flags & SA_SIGINFO) == 0 && prev.sa_handler != SIG_DFL && prev.sa_handler != SIG_IGN)
+  {
+    prev.sa_handler (signo);
+    return;
+  }
+
+  sigaction (signo, &prev, NULL);
 }

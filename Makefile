@@ -2,14 +2,15 @@ all:
 	@echo "Nothing to build. To run the test-suite: make check"
 
 check: node_modules
+	$(MAKE) -C test deploy
 	@echo ""
 	@echo "[*] Running the test suite with optimizations disabled (interpreter mode)."
 	@echo ""
-	@$(MAKE) check-run
+	@$(MAKE) -C test run
 	@echo ""
 	@echo "[*] Running the test suite with optimizations enabled."
 	@echo ""
-	@$(MAKE) RUNNER_ARGS="--enable-optimizations" check-run
+	@$(MAKE) -C test RUNNER_ARGS="--enable-optimizations" run
 
 check-run: node_modules
 	$(MAKE) -C test deploy
@@ -30,4 +31,4 @@ clean:
 	rm -rf node_modules
 	$(MAKE) -C test clean
 
-.PHONY: all check check-gdb develop clean
+.PHONY: all check check-run check-gdb develop clean
