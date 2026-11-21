@@ -4,6 +4,7 @@ import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 import org.junit.runner.JUnitCore;
 
@@ -24,12 +25,38 @@ public class TestRunner {
 
         registerClassLoader(TestRunner.class.getClassLoader());
 
-        JUnitCore.main(
-            "re.frida.ClassRegistryTest",
-            "re.frida.MethodTest",
-            "re.frida.ClassCreationTest",
-            "re.frida.PerformTest"
-        );
+        String[] classes = (args.length > 1)
+                ? Arrays.copyOfRange(args, 1, args.length)
+                : isAndroid()
+                    ? new String[] {
+                        "re.frida.ClassRegistryTest",
+                        "re.frida.MethodTest",
+                        "re.frida.ClassCreationTest",
+                        "re.frida.PerformTest"
+                    }
+                    : new String[] {
+                        "re.frida.ClassRegistryTest",
+                        "re.frida.MethodTest"
+                    };
+        JUnitCore.main(classes);
+    }
+
+    public static boolean isAndroid() {
+        try {
+            Class.forName("android.os.Build");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
+
+    public static int getAndroidApiLevel() {
+        try {
+            Class<?> version = Class.forName("android.os.Build$VERSION");
+            return version.getField("SDK_INT").getInt(null);
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     public static String getCacheDir() {
